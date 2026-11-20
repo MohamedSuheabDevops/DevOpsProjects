@@ -1,0 +1,83 @@
+# The course version (Section 21): GitHub Actions -> AWS ECR using OIDC (no access keys stored anywhere),
+# then the new version is committed into Git and ArgoCD deploys it to EKS.
+# Flow: git tag -> build 5 images -> push to ECR -> commit new tag into gitops/envs/eks -> ArgoCD deploys.
+#
+# To use it:
+#   1. terraform/ci-oidc: terraform apply -var github_repo=<user>/<repo>   (creates the role and 5 ECR repositories)
+#   2. gh secret set AWS_ROLE_ARN --body "$(terraform -chdir=terraform/ci-oidc output -raw role_arn)"
+#   3. git mv .github/workflows/release.yml ci/release-dockerhub.yml.example   (so only ONE release workflow runs on a tag)
+#   4. cp ci/ecr-oidc-release.yml.example .github/workflows/release-ecr.yml
+name: release-ecr
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write      # lets the job request an OIDC token from GitHub
+      contents: read
+    strategy:
+      matrix:
+        service: [portal, appointments, billing, doctors, booking]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.ecr.outputs.registry }}/careconnect/${{ matrix.service }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha
+      - uses: docker/build-push-action@v6
+        with:
+          context: apps/${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  update-gitops:
+    needs: build-push
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Point the EKS environment at the new images
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          for svc in portal appointments billing doctors booking; do
+            F=gitops/envs/eks/$svc.yaml
+            yq -i ".image.repository = \"${{ steps.ecr.outputs.registry }}/careconnect/$svc\"" $F
+            yq -i ".image.tag = \"${VERSION}\"" $F
+          done
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gitops/envs/eks
+          git commit -m "ci: deploy ${GITHUB_REF_NAME} to eks" || echo "nothing to commit"
+          git push origin HEAD:main

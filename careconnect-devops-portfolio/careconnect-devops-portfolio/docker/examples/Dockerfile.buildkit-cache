@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1
+# BuildKit cache mount: Maven's download folder is kept BETWEEN builds, even when the layer is rebuilt.
+#   DOCKER_BUILDKIT=1 docker build -f docker/examples/Dockerfile.buildkit-cache -t portal:bk apps/portal
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /src
+COPY pom.xml .
+COPY src ./src
+RUN --mount=type=cache,target=/root/.m2 \
+    mvn -q -B package -DskipTests
+
+FROM eclipse-temurin:21-jre-alpine
+RUN adduser -D -u 10001 app
+WORKDIR /app
+COPY --from=build /src/target/*.jar app.jar
+USER 10001
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

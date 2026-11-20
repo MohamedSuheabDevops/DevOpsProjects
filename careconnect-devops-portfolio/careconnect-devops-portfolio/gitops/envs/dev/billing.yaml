@@ -1,0 +1,17 @@
+# billing (Spring Boot) on the local kind cluster.
+# The release workflow rewrites image.repository and image.tag below and commits them. ArgoCD then deploys.
+image:
+  repository: careconnect-billing
+  tag: dev
+  pullPolicy: IfNotPresent
+replicaCount: 2
+env:
+  SERVICE_NAME: billing
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_NAME: careconnect
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { cpu: 500m, memory: 512Mi }
+probes:
+  livenessInitialDelaySeconds: 60

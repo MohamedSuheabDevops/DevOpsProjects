@@ -1,0 +1,15 @@
+# BAD layer order, on purpose. Compare with apps/portal/Dockerfile (good order).
+# Build both and change one line of Java between builds: this one re-downloads every dependency.
+#   docker build -f docker/examples/Dockerfile.java-bad-cache -t portal:bad apps/portal
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /src
+# source copied FIRST: any code change breaks the cache for the next line
+COPY . .
+RUN mvn -q -B package -DskipTests          # dependencies are downloaded again every time
+
+FROM eclipse-temurin:21-jre-alpine
+RUN adduser -D -u 10001 app
+WORKDIR /app
+COPY --from=build /src/target/*.jar app.jar
+USER 10001
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
